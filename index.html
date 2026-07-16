@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>고덕역 5호선 승강장 - 점자블록 보행 시뮬레이션</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #101317;
+      font-family: sans-serif;
+    }
+    #info {
+      position: fixed;
+      left: 12px;
+      top: 12px;
+      z-index: 10;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.45);
+      padding: 10px 12px;
+      border-radius: 8px;
+      line-height: 1.5;
+      font-size: 14px;
+      max-width: 560px;
+      user-select: none;
+    }
+    #crosshair {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      width: 14px;
+      height: 14px;
+      margin-left: -7px;
+      margin-top: -7px;
+      color: rgba(255,255,255,0.85);
+      font-size: 14px;
+      text-align: center;
+      pointer-events: none;
+      z-index: 9;
+    }
+    #blocker {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 20;
+      color: #fff;
+      text-align: center;
+    }
+    #startBox {
+      background: rgba(20, 20, 20, 0.88);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 12px;
+      padding: 18px 22px;
+      max-width: 560px;
+      cursor: pointer;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+  </style>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="info">
+    마우스: 시점 이동 · WASD: 걷기 · 클릭 후 시작<br>
+    열차/스크린도어 30초 주기 무한 반복 · 문 열림 시에만 통과 가능
+  </div>
+  <div id="crosshair">+</div>
+  <div id="blocker">
+    <div id="startBox">
+      <strong>고덕역 5호선 승강장 보행 시뮬레이션</strong>
+      열차와 스크린도어가 30초 주기로 반복 움직입니다.
+      <div style="margin-top:8px;font-size:13px;color:#ddd;line-height:1.5;">
+        W A S D: 이동<br>
+        마우스: 시점 회전<br>
+        ESC: 시점 해제
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+
+    let scene, camera, renderer, controls;
+    const clock = new THREE.Clock();
+    const moveState = { forward: false, backward: false, left: false, right: false };
+
+    const colliders = [];
+    const openPassages = [];
+    const npcList = [];
+    const gapZones = [];
+
+    let train, trainDoors = [];
+    let trainTimer = 0;
+    let trainState = 'approach';
+    let doorOpenAmount = 0;
+    let gameOver = false;
+
+    init();
+    animate();
+
+    function init() {
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x101317);
+      scene.fog = new THREE.Fog(0x101317, 10, 130);
+
+      camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 300);
+      camera.position.set(0, 1.7, -16);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      document.body.appendChild(renderer.domElement);
+
+      controls = new PointerLockControls(camera, document.body);
+      scene.add(controls.getObject());
+
+      const blocker = document.getElementById('blocker');
+      document.getElementById('startBox').addEventListener('click', () => controls.lock());
+      controls.addEventListener('lock', () => blocker.style.display = 'none');
+      controls.addEventListener('unlock', () => blocker.style.display = 'flex');
+
+      window.addEventListener('keydown', onKeyDown);
+      window.addEventListener('keyup', onKeyUp);
+      window.addEventListener('resize', onResize);
+
+      addLights();
+      addStationEnvelope();
+      addPlatform();
+      addGodeokIdentity();
+      addTrainsTrack();
+      addScreenDoors();
+      addBenches();
+      addDetailedBraillePaths();
+      buildDynamicTrain();
+
+      controls.getObject().position.set(0, 1.7, -16);
+    }
+
+    function addLights() {
+      scene.add(new THREE.AmbientLight(0xffffff, 1.05));
+      scene.add(new THREE.HemisphereLight(0xe0d8ff, 0x2a2d33, 0.75));
+      const main = new THREE.DirectionalLight(0xffffff, 0.9);
+      main.position.set(10, 20, -5);
+      scene.add(main);
+    }
+
+    function addStationEnvelope() {
+      const wallMat = new THREE.MeshStandardMaterial({ color: 0xcfd3d8, roughness: 0.95 });
+      const ceilingMat = new THREE.MeshStandardMaterial({ color: 0xb6bcc3, roughness: 1 });
+
+      const ceiling = new THREE.Mesh(new THREE.BoxGeometry(92, 2, 88), ceilingMat);
+      ceiling.position.set(0, 10, 6);
+      scene.add(ceiling);
+      colliders.push(ceiling);
+
+      const backWall = new THREE.Mesh(new THREE.BoxGeometry(92, 10, 2), wallMat);
+      backWall.position.set(0, 5, -38);
+      scene.add(backWall);
+      colliders.push(backWall);
+
+      const frontWall = new THREE.Mesh(new THREE.BoxGeometry(92, 10, 2), wallMat);
+      frontWall.position.set(0, 5, 50);
+      scene.add(frontWall);
+      colliders.push(frontWall);
+
+      const leftWall = new THREE.Mesh(new THREE.BoxGeometry(2, 10, 88), wallMat);
+      leftWall.position.set(-46, 5, 6);
+      scene.add(leftWall);
+      colliders.push(leftWall);
+
+      const rightWall = new THREE.Mesh(new THREE.BoxGeometry(2, 10, 88), wallMat);
+      rightWall.position.set(46, 5, 6);
+      scene.add(rightWall);
+      colliders.push(rightWall);
+    }
+
+    function addPlatform() {
+      const platform = new THREE.Mesh(
+        new THREE.BoxGeometry(34, 0.8, 60),
+        new THREE.MeshStandardMaterial({ color: 0x8b9096, roughness: 1 })
+      );
+      platform.position.set(0, 0.4, 6);
+      scene.add(platform);
+    }
+
+    function addGodeokIdentity() {
+      const purple = 0x812581;
+      const purpleMat = new THREE.MeshStandardMaterial({ color: purple, roughness: 0.8 });
+      const whiteMat = new THREE.MeshStandardMaterial({ color: 0xf4f4f4, roughness: 0.9 });
+
+      const platformBand = new THREE.Mesh(new THREE.BoxGeometry(92, 0.22, 1.0), purpleMat);
+      platformBand.position.set(0, 0.95, -16);
+      scene.add(platformBand);
+
+      const arrowSign = new THREE.Mesh(new THREE.BoxGeometry(12, 2.0, 0.25), whiteMat);
+      arrowSign.position.set(0, 8.0, 28);
+      scene.add(arrowSign);
+
+      const arrowStripe = new THREE.Mesh(new THREE.BoxGeometry(12.2, 0.3, 0.28), purpleMat);
+      arrowStripe.position.set(0, 8.7, 28);
+      scene.add(arrowStripe);
+    }
+
+    function addScreenDoors() {
+      const group = new THREE.Group();
+      group.position.set(0, 0, 30);
+
+      const frameMat = new THREE.MeshStandardMaterial({ color: 0x7b8088, roughness: 0.55, metalness: 0.35 });
+      const glassMat = new THREE.MeshStandardMaterial({ color: 0x69b8ff, transparent: true, opacity: 0.22, roughness: 0.2 });
+
+      const doorX = [-15, -9, -3, 3, 9, 15];
+      doorX.forEach((x) => {
+        const frame = new THREE.Mesh(new THREE.BoxGeometry(4.6, 4.6, 0.65), frameMat);
+        frame.position.set(x, 2.3, -14);
+        group.add(frame);
+
+        const glass = new THREE.Mesh(new THREE.BoxGeometry(3.7, 3.9, 0.2), glassMat);
+        glass.position.set(x, 2.1, -13.8);
+        group.add(glass);
+      });
+
+      scene.add(group);
+    }
+
+    function addTrainsTrack() {
+      const track = new THREE.Mesh(
+        new THREE.BoxGeometry(92, 0.5, 18),
+        new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 1 })
+      );
+      track.position.set(0, 0.25, 30);
+      scene.add(track);
+    }
+
+    function addBenches() {
+      const benchMat = new THREE.MeshStandardMaterial({ color: 0x8b5e3c, roughness: 1 });
+      const legMat = new THREE.MeshStandardMaterial({ color: 0x5f4630, roughness: 1 });
+
+      for (let z = -10; z <= 24; z += 17) {
+        const bench = new THREE.Group();
+        const seat = new THREE.Mesh(new THREE.BoxGeometry(8, 0.7, 1.8), benchMat);
+        seat.position.y = 0.8;
+        bench.add(seat);
+
+        for (const x of [-3.3, 3.3]) {
+          const leg = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.8, 0.35), legMat);
+          leg.position.set(x, 0.4, -0.55);
+          bench.add(leg);
+          const leg2 = leg.clone();
+          leg2.position.z = 0.55;
+          bench.add(leg2);
+        }
+
+        bench.rotation.y = Math.PI / 2;
+        bench.position.set(0, 0.35, z);
+        scene.add(bench);
+        colliders.push(seat);
+      }
+    }
+
+    function addDetailedBraillePaths() {
+      const lineMat = new THREE.MeshStandardMaterial({ color: 0xf4d84f, roughness: 1 });
+      const dotMat = new THREE.MeshStandardMaterial({ color: 0xe3c742, roughness: 1 });
+
+      const centerLine = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.04, 58), lineMat);
+      centerLine.position.set(0, 0.02, 6);
+      scene.add(centerLine);
+
+      for (let z = -28; z <= 28; z += 3.5) {
+        const guideBar = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.04, 0.85), lineMat);
+        guideBar.position.set(0, 0.02, z);
+        scene.add(guideBar);
+      }
+
+      createDotPatch(-9, 30, 5.0, 3.4, dotMat);
+      createDotPatch(0, 30, 5.0, 3.4, dotMat);
+      createDotPatch(9, 30, 5.0, 3.4, dotMat);
+
+      createDotPatch(-15, 14, 4.5, 3.4, dotMat);
+      createDotPatch(15, 14, 4.5, 3.4, dotMat);
+
+      createDotPatch(-15, -10, 4.5, 3.4, dotMat);
+      createDotPatch(15, -10, 4.5, 3.4, dotMat);
+
+      createDotPatch(0, -2, 5.2, 3.8, dotMat);
+      createDotPatch(0, 18, 5.2, 3.8, dotMat);
+
+      createStripePatch(0, -6, 4.0, 1.8, lineMat);
+    }
+
+    function createDotPatch(cx, cz, w, d, dotMat) {
+      const rows = 5;
+      const cols = 8;
+      for (let i = 0; i < rows; i++) {
+        for (let j = 0; j < cols; j++) {
+          const dot = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.08, 10), dotMat);
+          dot.position.set(
+            cx + (j - (cols - 1) / 2) * (w / cols),
+            0.06,
+            cz + (i - (rows - 1) / 2) * (d / rows)
+          );
+          scene.add(dot);
+        }
+      }
+    }
+
+    function createStripePatch(cx, cz, w, d, lineMat) {
+      const patch = new THREE.Mesh(new THREE.BoxGeometry(w, 0.04, d), lineMat);
+      patch.position.set(cx, 0.02, cz);
+      scene.add(patch);
+    }
+
+    function buildDynamicTrain() {
+      train = new THREE.Group();
+      train.position.set(0, 0, 90);
+      scene.add(train);
+
+      const outerMat = new THREE.MeshStandardMaterial({ color: 0xe7eaee, roughness: 0.75 });
+      const stripeMat = new THREE.MeshStandardMaterial({ color: 0x2d67d8, roughness: 0.8 });
+      const darkMat = new THREE.MeshStandardMaterial({ color: 0x1f2933, roughness: 0.3 });
+      const floorMat = new THREE.MeshStandardMaterial({ color: 0x60666d, roughness: 1 });
+      const seatMat = new THREE.MeshStandardMaterial({ color: 0x8b5e3c, roughness: 1 });
+      const railMat = new THREE.MeshStandardMaterial({ color: 0xbfc5cc, roughness: 0.35, metalness: 0.7 });
+
+      const body = new THREE.Mesh(new THREE.BoxGeometry(70, 6, 18), outerMat);
+      body.position.y = 3;
+      train.add(body);
+
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(70.2, 0.7, 18.1), stripeMat);
+      stripe.position.y = 2.3;
+      train.add(stripe);
+
+      const floor = new THREE.Mesh(new THREE.BoxGeometry(66, 0.4, 16), floorMat);
+      floor.position.set(0, 0.2, 0);
+      train.add(floor);
+
+      for (let side of [-1, 1]) {
+        for (let i = -2; i <= 2; i++) {
+          const seat = new THREE.Mesh(new THREE.BoxGeometry(6, 0.8, 1.6), seatMat);
+          seat.position.set(side * 24, 1.2, i * 3.2);
+          train.add(seat);
+        }
+      }
+
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 36, 8), railMat);
+      bar.rotation.z = Math.PI / 2;
+      bar.position.set(0, 5.1, 0);
+      train.add(bar);
+
+      for (let i = -3; i <= 3; i++) {
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.45, 0.08, 8, 16), darkMat);
+        ring.position.set(i * 6 - 12, 4.2, 0);
+        train.add(ring);
+      }
+
+      const cabinDoorL = new THREE.Mesh(new THREE.BoxGeometry(2.3, 3.8, 0.15), darkMat);
+      cabinDoorL.position.set(-33.5, 2.3, 0);
+      train.add(cabinDoorL);
+      const cabinDoorR = cabinDoorL.clone();
+      cabinDoorR.position.x = 33.5;
+      train.add(cabinDoorR);
+
+      trainDoors = [];
+      for (let x = -24; x <= 24; x += 12) {
+        const d = createSlidingDoor(x);
+        train.add(d.group);
+        trainDoors.push(d);
+      }
+    }
+
+    function createSlidingDoor(x) {
+      const group = new THREE.Group();
+      group.position.set(x, 0, 0);
+
+      const frameMat = new THREE.MeshStandardMaterial({ color: 0xbfc5cc, roughness: 0.45, metalness: 0.55 });
+      const panelMat = new THREE.MeshStandardMaterial({ color: 0xe9ecef, roughness: 0.75 });
+
+      const left = new THREE.Mesh(new THREE.BoxGeometry(1.2, 4.2, 0.16), panelMat);
+      left.position.set(-0.7, 2.6, 9);
+      group.add(left);
+
+      const right = new THREE.Mesh(new THREE.BoxGeometry(1.2, 4.2, 0.16), panelMat);
+      right.position.set(0.7, 2.6, 9);
+      group.add(right);
+
+      const outline = new THREE.Mesh(new THREE.BoxGeometry(4.8, 4.8, 0.22), frameMat);
+      outline.position.set(0, 2.6, 9);
+      group.add(outline);
+
+      return { group, left, right };
+    }
+
+    function onKeyDown(e) {
+      if (e.code === 'KeyW') moveState.forward = true;
+      if (e.code === 'KeyS') moveState.backward = true;
+      if (e.code === 'KeyA') moveState.left = true;
+      if (e.code === 'KeyD') moveState.right = true;
+    }
+
+    function onKeyUp(e) {
+      if (e.code === 'KeyW') moveState.forward = false;
+      if (e.code === 'KeyS') moveState.backward = false;
+      if (e.code === 'KeyA') moveState.left = false;
+      if (e.code === 'KeyD') moveState.right = false;
+    }
+
+    function onResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function collides(pos) {
+      const r = 0.55;
+      const playerBox = { min: { x: pos.x - r, y: 0, z: pos.z - r }, max: { x: pos.x + r, y: 1.7, z: pos.z + r } };
+      for (const obj of colliders) {
+        const box = new THREE.Box3().setFromObject(obj);
+        if (box.intersectsBox(new THREE.Box3(playerBox.min, playerBox.max))) return true;
+      }
+      return false;
+    }
+
+    function updateTrain(delta) {
+      trainTimer += delta;
+      const cycle = trainTimer % 30;
+
+      if (cycle < 5) {
+        trainState = 'approach';
+        train.position.z = THREE.MathUtils.lerp(90, 30, cycle / 5);
+      } else if (cycle < 25) {
+        trainState = 'open';
+        train.position.z = 30;
+      } else if (cycle < 30) {
+        trainState = 'depart';
+        train.position.z = THREE.MathUtils.lerp(30, 90, (cycle - 25) / 5);
+      } else {
+        trainState = 'away';
+        train.position.z = 90;
+      }
+
+      doorOpenAmount = cycle >= 5 && cycle < 25 ? Math.sin((cycle - 5) / 20 * Math.PI) * 1.2 : 0;
+      for (const d of trainDoors) {
+        d.left.position.x = -0.7 - doorOpenAmount;
+        d.right.position.x = 0.7 + doorOpenAmount;
+      }
+
+      openPassages.length = 0;
+      if (trainState === 'open') {
+        const doorX = [-15, -9, -3, 3, 9, 15];
+        doorX.forEach((x) => openPassages.push({ x, z: 16, w: 4.8, d: 4.0 }));
+      }
+    }
+
+    function applyMovement(delta) {
+      const object = controls.getObject();
+      const speed = 6.5 * delta;
+      const oldPos = object.position.clone();
+
+      const direction = new THREE.Vector3();
+      camera.getWorldDirection(direction);
+      direction.y = 0;
+      direction.normalize();
+
+      const right = new THREE.Vector3().crossVectors(direction, new THREE.Vector3(0, 1, 0)).normalize();
+
+      if (moveState.forward) object.position.addScaledVector(direction, speed);
+      if (moveState.backward) object.position.addScaledVector(direction, -speed);
+      if (moveState.left) object.position.addScaledVector(right, speed);
+      if (moveState.right) object.position.addScaledVector(right, -speed);
+
+      object.position.y = 1.7;
+      if (collides(object.position)) object.position.copy(oldPos);
+
+      object.position.x = THREE.MathUtils.clamp(object.position.x, -34, 34);
+      object.position.z = THREE.MathUtils.clamp(object.position.z, -18, 38);
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      updateTrain(delta);
+      if (controls.isLocked) applyMovement(delta);
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
